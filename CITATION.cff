@@ -4,7 +4,7 @@ title: "Narrate: English narration of Lean 4 proofs"
 type: software
 authors:
   - family-names: Atayev
-    given-names: Anvar
+    given-names: Anvarbek
     orcid: "https://orcid.org/0009-0000-0572-0857"
 repository-code: "https://github.com/AnvarAtayev/lean-narrate"
 license: Apache-2.0
