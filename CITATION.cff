@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use Narrate in your work, please cite it as below."
+title: "Narrate: English narration of Lean 4 proofs"
+type: software
+authors:
+  - family-names: Atayev
+    given-names: Anvar
+    orcid: "https://orcid.org/0009-0000-0572-0857"
+repository-code: "https://github.com/AnvarAtayev/lean-narrate"
+license: Apache-2.0
+date-released: 2026-09-13
+keywords:
+  - Lean 4
+  - natural language
+  - theorem proving
+  - teaching

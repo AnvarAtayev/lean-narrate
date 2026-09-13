@@ -1,0 +1,15 @@
+name = "narrate"
+version = "0.1.0"
+description = "Narrate Lean 4 proofs in English, in the Infoview"
+keywords = ["natural-language", "linter", "teaching", "infoview"]
+defaultTargets = ["Narrate"]
+
+# ProofWidgets renders the narration as HTML in the Infoview.
+# Pinned to the release used by Mathlib for Lean v4.34.0-rc2.
+[[require]]
+name = "proofwidgets"
+git = "https://github.com/leanprover-community/ProofWidgets4"
+rev = "v0.0.110"
+
+[[lean_lib]]
+name = "Narrate"
