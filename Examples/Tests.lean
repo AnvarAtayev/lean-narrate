@@ -160,6 +160,100 @@ theorem hypothesis_carrying_a_then (f : Nat → Nat) (hf : Function.Injective f)
   intro a b hab
   exact hf hab
 
+/-! ## Each tactic keeps its own sentence -/
+
+/--
+info: exfalso_reads_as_contradiction: for all propositions P Q, if P and (it is not the case that P) then Q
+1. Let's prove it's contradictory
+     [exfalso]  it remains to show False
+2. We conclude by hn using hp
+     [exact hn hp]  that closes the goal. ∎
+-/
+#guard_msgs in
+theorem exfalso_reads_as_contradiction (P Q : Prop) (hp : P) (hn : ¬P) : Q := by
+  exfalso
+  exact hn hp
+
+/--
+info: specialize_names_its_argument: for all propositions P Q, if (P implies Q) and P then Q
+1. We apply h to h'
+     [specialize h h']  we now know h : Q
+2. We conclude by h
+     [exact h]  that closes the goal. ∎
+-/
+#guard_msgs in
+theorem specialize_names_its_argument (P Q : Prop) (h : P → Q) (h' : P) : Q := by
+  specialize h h'
+  exact h
+
+/--
+info: clear_forgets: for all a b : Nat, if a = a and b = b then b = b
+1. We forget h and h2
+     [clear h h2]  the goal is unchanged (b = b)
+2. We conclude by computation
+     [rfl]  that closes the goal. ∎
+-/
+#guard_msgs in
+theorem clear_forgets (a b : Nat) (h : a = a) (h2 : b = b) : b = b := by
+  clear h h2
+  rfl
+
+/--
+info: suffices_states_what_is_left: for all propositions P Q, if (P implies Q) and P then Q
+1. It suffices to prove that P
+     [suffices hp : P by exact h hp]  it remains to show P
+2. We conclude by hP
+     [exact hP]  that closes the goal. ∎
+-/
+#guard_msgs in
+theorem suffices_states_what_is_left (P Q : Prop) (h : P → Q) (hP : P) : Q := by
+  suffices hp : P by exact h hp
+  exact hP
+
+/--
+info: by_cases_names_the_proposition: for every proposition P, P or (it is not the case that P)
+1. We proceed depending on P
+     [by_cases hP : P]  this splits into 2 cases: hP : P ⊢ P ∨ ¬P  /  hP : ¬P ⊢ P ∨ ¬P
+Case 1: Assume hP : P
+2. We conclude by Or.inl using hP
+     [exact Or.inl hP]  that closes this case
+Case 2: Assume hP : ¬P
+3. We conclude by Or.inr using hP
+     [exact Or.inr hP]  that closes the goal. ∎
+-/
+#guard_msgs in
+theorem by_cases_names_the_proposition (P : Prop) : P ∨ ¬P := by
+  by_cases hP : P
+  · exact Or.inl hP
+  · exact Or.inr hP
+
+/--
+info: let_sets_a_name: for all a b : Nat, max a b = max a b
+1. We set n := max a b
+     [let n := max a b]  we now know n : Nat
+2. We conclude by computation
+     [rfl]  that closes the goal. ∎
+-/
+#guard_msgs in
+theorem let_sets_a_name (a b : Nat) : max a b = max a b := by
+  let n := max a b
+  rfl
+
+/--
+info: tactic_without_an_entry_is_quoted: for every n : Nat, if n = 1 then n + n = 2
+1. We apply revert h
+     [revert h]  it remains to show n = 1 → n + n = 2
+2. Assume h : n = 1
+     [intro h]  we now know h : n = 1, and it remains to show n + n = 2
+3. We conclude by computation
+     [omega]  that closes the goal. ∎
+-/
+#guard_msgs in
+theorem tactic_without_an_entry_is_quoted (n : Nat) (h : n = 1) : n + n = 2 := by
+  revert h
+  intro h
+  omega
+
 /--
 info: grouped_connectives: for every n : Nat, (n = 0 or n = 1) and n < 2 exactly when (n = 0 and n < 2) or (n = 1 and n < 2)
 1. We conclude by computation

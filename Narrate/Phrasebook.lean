@@ -27,17 +27,34 @@ def afterHead (src head : String) : String :=
 
 def firstWord (s : String) : String := (s.splitOn " ").headD s
 
+/-- The words of `s`, ignoring the spacing the source happened to use. -/
+def words (s : String) : List String := (s.splitOn " ").filter (!·.isEmpty)
+
 /-- Strip one layer of `[ ]` from a rewrite rule list. -/
 def unbracket (s : String) : String :=
   let s := trimS s
   if s.startsWith "[" && s.endsWith "]" then trimS (toString ((s.drop 1).dropEnd 1)) else s
 
-/-- Split off a tactic's location: `[h] at h'` ↦ `("[h]", some "h'")`, and
-`[h]` ↦ `("[h]", none)`. -/
+/-- Split off a tactic's location: `[h] at h'` ↦ `("[h]", some "h'")`, `at h` ↦
+`("", some "h")`, and `[h]` ↦ `("[h]", none)`. -/
 def splitLocation (s : String) : String × Option String :=
-  match s.splitOn " at " with
-  | [] | [_] => (trimS s, none)
+  let s := trimS s
+  if s.startsWith "at " then ("", some (trimS (toString (s.drop 3))))
+  else match s.splitOn " at " with
+  | [] | [_] => (s, none)
   | before :: rest => (trimS before, some (trimS (String.intercalate " at " rest)))
+
+/-- `hP : P` ↦ `P`; text with no name in front is left alone. -/
+def afterColon (s : String) : String :=
+  match s.splitOn " : " with
+  | _ :: rest@(_ :: _) => trimS (String.intercalate " : " rest)
+  | _ => trimS s
+
+/-- The text after `sep`: `g hg using h` ↦ `h` for `sep := " using "`. -/
+def after (sep s : String) : String :=
+  match s.splitOn sep with
+  | _ :: rest@(_ :: _) => trimS (String.intercalate sep rest)
+  | _ => trimS s
 
 /-- `h : P := proof` ↦ `h : P`. -/
 def dropAssign (s : String) : String :=
@@ -46,10 +63,7 @@ def dropAssign (s : String) : String :=
   | x :: _ => trimS x
 
 /-- `⟨N, hN⟩ := ha ε hε` ↦ `ha ε hε`. -/
-def assignedTerm (s : String) : String :=
-  match s.splitOn ":=" with
-  | _ :: rest@(_ :: _) => trimS (String.intercalate ":=" rest)
-  | _ => s
+def assignedTerm (s : String) : String := after ":=" s
 
 /-- `ha ε hε` ↦ `ha applied to ε using hε`. An argument counts as a proof when the
 local context says it is one; compound terms are left as written. -/
@@ -100,7 +114,7 @@ def verboseFor (head src : String) (ctx gained : Array Hyp)
   let objs := gained.filter (fun h => !h.isProp)
   let introduce := introduceAll gained
   match head with
-  | "intro" =>
+  | "intro" | "rintro" =>
     match gained.toList with
     | [] => s!"Let's prove that {targetAfter}"
     -- `intro ε hε` with `hε : ε > 0` is Verbose Lean's bounded `Fix ε > 0`
@@ -128,11 +142,27 @@ def verboseFor (head src : String) (ctx gained : Array Hyp)
       -- `obtain ⟨k, rfl⟩ := h` substitutes instead of naming a fact
       | false, true => s!"By {from_} we get {names}"
       | false, false => s!"By {from_} we get {names} such that {suchThat}"
+  | "choose" =>
+    -- `choose g hg using h` names the chosen objects before the fact they come from
+    let names := String.intercalate " " (objs.toList.map (·.name))
+    let suchThat := String.intercalate " and " <|
+      props.toList.map fun h => s!"({h.name} : {h.type})"
+    if suchThat.isEmpty then s!"By {after " using " args} we choose {names}"
+    else s!"By {after " using " args} we choose {names} such that {suchThat}"
   | "use" | "exists" => s!"Let's prove that {args} works"
   | "exact" => s!"We conclude by {appliedCtx ctx args}"
   | "apply" =>
     if closed then s!"We conclude by {appliedCtx ctx args}"
     else s!"By {appliedCtx ctx args} it suffices to prove that {targetAfter}"
+  | "refine" =>
+    if split then "We prove each part in turn"
+    else if closed then s!"We conclude by {args}"
+    else s!"By {args} it suffices to prove that {targetAfter}"
+  | "specialize" =>
+    match words args with
+    | f :: rest@(_ :: _) => s!"We apply {f} to {String.intercalate " " rest}"
+    | _ => s!"We apply {args}"
+  | "suffices" => s!"It suffices to prove that {targetAfter}"
   | "rw" | "rewrite" =>
     let (rules, loc) := splitLocation args
     let place := match loc with
@@ -160,6 +190,9 @@ def verboseFor (head src : String) (ctx gained : Array Hyp)
     match props.toList with
     | h :: _ => s!"Assume for contradiction {h.name} : {h.type}"
     | [] => "Assume for contradiction that the goal is false"
+  | "exfalso" => "Let's prove it's contradictory"
+  | "contrapose" | "contrapose!" => s!"Let's prove the contrapositive: {targetAfter}"
+  | "by_cases" => s!"We proceed depending on {afterColon args}"
   | "left" | "right" => s!"Let's prove that {targetAfter}"
   | "constructor" =>
     if split then "We prove each part in turn"
@@ -170,11 +203,18 @@ def verboseFor (head src : String) (ctx gained : Array Hyp)
   | "case" | "next" => if closed then "That case is done" else s!"Let's prove that {targetAfter}"
   | "unfold" => s!"We reformulate using the definition of {firstWord args}"
   | "subst" => s!"We substitute using {args}"
-  | "push" => "We push the negation inwards"
+  | "set" | "let" => s!"We set {(args.splitOn " with ").headD args}"
+  | "clear" => s!"We forget {String.intercalate " and " (words args)}"
+  | "push" | "push_neg" =>
+    match splitLocation args with
+    | (_, some loc) => s!"We push the negation at {loc}"
+    | (_, none) => "We push the negation"
   | "ring" | "ring_nf" | "norm_num" | "linarith" | "nlinarith" | "omega"
   | "positivity" | "decide" | "simp" | "simpa" | "field_simp" | "trivial" | "rfl" =>
     if closed then "We conclude by computation" else "We compute"
   | "sorry" => "This step is left unproved"
-  | _ => if closed then s!"We conclude by {appliedCtx ctx src}" else s!"We apply {appliedCtx ctx src}"
+  -- A tactic with no entry is quoted as written: reading it as a function applied to
+  -- arguments, as `exact` does, turns `revert h` into "revert using h".
+  | _ => if closed then s!"We conclude by {src}" else s!"We apply {src}"
 
 end Narrate
