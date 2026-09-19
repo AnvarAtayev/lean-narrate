@@ -67,23 +67,25 @@ def caseSummary (gained : Array Hyp) (goal : String) : String :=
   let hyps := String.intercalate ", " (gained.toList.map fun h => s!"{h.name} : {h.type}")
   if hyps.isEmpty then s!"⊢ {goal}" else s!"{hyps} ⊢ {goal}"
 
-/-- Build a `Step` from the snapshots before and after a tactic. `cases` holds the new
-hypotheses and target of each case the tactic splits into, and `last` marks the final
-step of the proof, the only one that ends it. -/
+/-- Build a `Step` from the snapshots before and after a tactic. `newTargets` are the
+goals that replaced the one the step was working on, `nAfter` is how many goals remain
+in all, `cases` holds the new hypotheses and target of each case the tactic splits
+into, and `last` marks the final step of the proof, the only one that ends it. -/
 def mkStep (head src : String) (ctx : Array Hyp) (targetBefore : String)
-    (afterHyps : Array Hyp) (afterTargets : Array String) (nBefore : Nat)
+    (afterHyps : Array Hyp) (newTargets : Array String) (nAfter : Nat)
     (cases : Array (Array Hyp × String)) (last : Bool) : Step :=
-  let nAfter := afterTargets.size
   let split := !cases.isEmpty
-  let closed := nAfter == 0 && !split
-  let targetAfter := afterTargets[0]?.getD ""
+  let closed := newTargets.isEmpty && !split
+  let targetAfter := newTargets[0]?.getD ""
   let gained := afterHyps.filter fun h => !ctx.contains h
   let outcome :=
     if split then
       let summaries := cases.toList.map fun (g, t) => caseSummary g t
       s!"this splits into {cases.size} cases: {String.intercalate "  /  " summaries}"
-    else if closed then if last then "that closes the goal. ∎" else "that closes this case"
-    else if nAfter < nBefore then s!"that case is done; {nAfter} goal(s) still open"
+    else if closed then
+      if last then "that closes the goal. ∎"
+      else if nAfter == 0 then "that closes this case"
+      else s!"that case is done; {nAfter} goal(s) still open"
     else
       let gainedTxt := if gained.isEmpty then [] else
         [s!"we now know {String.intercalate "; " (gained.toList.map fun h => s!"{h.name} : {h.type}")}"]
@@ -93,7 +95,7 @@ def mkStep (head src : String) (ctx : Array Hyp) (targetBefore : String)
         else []
       String.intercalate ", and " (gainedTxt ++ targetTxt)
   { tactic := src
-    verbose := verboseFor head src ctx gained targetAfter closed split
+    verbose := verboseFor head src ctx gained targetBefore targetAfter closed split
     outcome }
 
 /-! ## Reading steps from the info trees -/
@@ -137,14 +139,21 @@ partial def branchGoals (ti : TacticInfo) : InfoTree → Array (MetavarContext �
     | _ => children.toArray.flatMap (branchGoals ti)
   | .hole _ => #[]
 
+/-- The goals that replaced the one a step was working on: those it left behind that
+were not already waiting in the queue. A step is described by these, never by a goal
+it did not touch: in `constructor; apply hp; exact hq` the `apply` closes the first
+conjunct, and the second is none of its business. -/
+def newGoals (ti : TacticInfo) : List MVarId :=
+  let waiting := ti.goalsBefore.drop 1
+  ti.goalsAfter.filter (!waiting.contains ·)
+
 /-- The goals a step splits into. Usually these are its new goals, but
 `induction … with` closes its branches itself, leaving no goals behind, so for it
 they are read from the branch nodes beneath it. -/
 def casesOf (head : String) (ti : TacticInfo) (children : PersistentArray InfoTree) :
     Array (MetavarContext × MVarId) :=
   if ti.goalsAfter.length > ti.goalsBefore.length then
-    let old := ti.goalsBefore.drop 1
-    (ti.goalsAfter.filter (!old.contains ·)).toArray.map (ti.mctxAfter, ·)
+    (newGoals ti).toArray.map (ti.mctxAfter, ·)
   else if head == "induction" || head == "cases" then
     let branches := children.toArray.flatMap (branchGoals ti) |>.foldl (init := #[])
       fun acc (m, g) => if acc.any (·.2 == g) then acc else acc.push (m, g)
@@ -177,8 +186,8 @@ def stepOfCand (c : Cand) (last : Bool) : CommandElabM (Step × Array (MVarId ×
     match ti.goalsBefore with
     | [] => pure (#[], "")
     | g :: _ => return (← hypInfos g, ← goalString g)
-  let (afterHyps, afterTargets) ← { ci with mctx := ti.mctxAfter }.runMetaM {} do
-    match ti.goalsAfter with
+  let (afterHyps, newTargets) ← { ci with mctx := ti.mctxAfter }.runMetaM {} do
+    match newGoals ti with
     | [] => pure (#[], #[])
     | g :: rest => return (← hypInfos g, ← (g :: rest).toArray.mapM fun x => goalString x)
   let mut cases := #[]
@@ -188,8 +197,8 @@ def stepOfCand (c : Cand) (last : Bool) : CommandElabM (Step × Array (MVarId ×
     let gained := hyps.filter fun h => !ctx.contains h
     cases := cases.push (gained, goal)
     headers := headers.push (g, caseHeader c.head cases.size gained goal targetBefore)
-  let step := mkStep c.head (tacticSrc ti.stx) ctx targetBefore afterHyps afterTargets
-    ti.goalsBefore.length cases last
+  let step := mkStep c.head (tacticSrc ti.stx) ctx targetBefore afterHyps newTargets
+    ti.goalsAfter.length cases last
   return (step, headers)
 
 /-- Every step of one declaration's proof, in source order.
