@@ -99,7 +99,7 @@ Importing `Narrate` switches narration on for that file only. Files that import 
 set_option linter.narrate false
 ```
 
-[Examples/Demo.lean](Examples/Demo.lean) covers the main cases using core Lean: run `lake env lean Examples/Demo.lean`.
+[Examples/Demo.lean](Examples/Demo.lean) covers the main cases using core Lean: run `lake env lean Examples/Demo.lean`. [Examples/Tests.lean](Examples/Tests.lean) runs the same way and pins the exact narration of the cases that are easiest to get wrong, such as a step that closes one of several open goals.
 
 ## How it works
 

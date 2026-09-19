@@ -32,6 +32,13 @@ def unbracket (s : String) : String :=
   let s := trimS s
   if s.startsWith "[" && s.endsWith "]" then trimS (toString ((s.drop 1).dropEnd 1)) else s
 
+/-- Split off a tactic's location: `[h] at h'` ↦ `("[h]", some "h'")`, and
+`[h]` ↦ `("[h]", none)`. -/
+def splitLocation (s : String) : String × Option String :=
+  match s.splitOn " at " with
+  | [] | [_] => (trimS s, none)
+  | before :: rest => (trimS before, some (trimS (String.intercalate " at " rest)))
+
 /-- `h : P := proof` ↦ `h : P`. -/
 def dropAssign (s : String) : String :=
   match s.splitOn ":=" with
@@ -82,11 +89,12 @@ def caseHeader (head : String) (i : Nat) (gained : Array Hyp) (goal goalBefore :
 /-- The sentence for one step.
 
 * `head`, `src`: the tactic's leading token and source text
-* `ctx`: hypotheses before the step; `gained`: hypotheses the step added
-* `targetAfter`: the first remaining goal; `closed`: whether no goals remain
-* `split`: whether the step splits the goal into cases -/
+* `ctx`: hypotheses before the step; `gained`: hypotheses it added or changed
+* `targetBefore`: the goal it was working on; `targetAfter`: what replaced that goal
+* `closed`: whether it closed the goal it was working on, even if others remain
+* `split`: whether it splits that goal into cases -/
 def verboseFor (head src : String) (ctx gained : Array Hyp)
-    (targetAfter : String) (closed split : Bool) : String :=
+    (targetBefore targetAfter : String) (closed split : Bool) : String :=
   let args := afterHead src head
   let props := gained.filter (·.isProp)
   let objs := gained.filter (fun h => !h.isProp)
@@ -104,29 +112,59 @@ def verboseFor (head src : String) (ctx gained : Array Hyp)
   | "obtain" | "rcases" | "cases" =>
     -- `obtain ⟨x, hx⟩ := h` and `rcases h with x | y` both name the term `h`
     let term := ((assignedTerm args).splitOn " with ").headD args
+    let from_ := appliedCtx ctx term
     if split then
       s!"We proceed using {term}"
+    -- `cases h` on an impossible hypothesis leaves nothing behind, and nothing to say
+    -- beyond the fact it was used
+    else if closed then s!"We conclude by {from_}"
     else
       let suchThat := String.intercalate " and " <|
         props.toList.map fun h => s!"({h.name} : {h.type})"
-      if objs.isEmpty then s!"By {appliedCtx ctx term} we get {suchThat}"
-      else
-        let names := String.intercalate " " (objs.toList.map (·.name))
-        s!"By {appliedCtx ctx term} we get {names} such that {suchThat}"
+      let names := String.intercalate " " (objs.toList.map (·.name))
+      match objs.isEmpty, props.isEmpty with
+      | true, true => s!"We use {from_}"
+      | true, false => s!"By {from_} we get {suchThat}"
+      -- `obtain ⟨k, rfl⟩ := h` substitutes instead of naming a fact
+      | false, true => s!"By {from_} we get {names}"
+      | false, false => s!"By {from_} we get {names} such that {suchThat}"
   | "use" | "exists" => s!"Let's prove that {args} works"
   | "exact" => s!"We conclude by {appliedCtx ctx args}"
-  | "apply" => s!"By {appliedCtx ctx args} it suffices to prove that {targetAfter}"
+  | "apply" =>
+    if closed then s!"We conclude by {appliedCtx ctx args}"
+    else s!"By {appliedCtx ctx args} it suffices to prove that {targetAfter}"
   | "rw" | "rewrite" =>
-    if closed then s!"We rewrite using {unbracket args}, which closes the goal"
-    else s!"We rewrite using {unbracket args}, which becomes {targetAfter}"
-  | "show" | "change" => s!"Let's prove that {args}"
+    let (rules, loc) := splitLocation args
+    let place := match loc with
+      | none => ""
+      | some "*" => " everywhere"
+      | some l => s!" at {l}"
+    if closed then s!"We rewrite using {unbracket rules}{place}, which closes the goal"
+    else
+      -- What the rewrite changed: the hypotheses rewritten at, and the goal if it was
+      -- rewritten too. A single hypothesis is already named by `place`.
+      let goalChanged := targetAfter != targetBefore
+      let changes := match gained.toList, goalChanged with
+        | [h], false => [h.type]
+        | hyps, _ => hyps.map (fun h => s!"{h.name} : {h.type}")
+            ++ (if goalChanged then [targetAfter] else [])
+      if changes.isEmpty then s!"We rewrite using {unbracket rules}{place}"
+      else s!"We rewrite using {unbracket rules}{place}, which becomes " ++
+        String.intercalate "; " changes
+  | "show" | "change" =>
+    match splitLocation args with
+    | (stmt, some loc) => s!"We reformulate {loc} as {stmt}"
+    | (stmt, none) => s!"Let's prove that {stmt}"
   | "have" => s!"Fact {dropAssign args}"
   | "by_contra" =>
     match props.toList with
     | h :: _ => s!"Assume for contradiction {h.name} : {h.type}"
     | [] => "Assume for contradiction that the goal is false"
   | "left" | "right" => s!"Let's prove that {targetAfter}"
-  | "constructor" => if split then "We prove each part in turn" else s!"Let's prove that {targetAfter}"
+  | "constructor" =>
+    if split then "We prove each part in turn"
+    else if closed then "We conclude by the constructor"
+    else s!"Let's prove that {targetAfter}"
   | "induction" => s!"We proceed by induction on {firstWord args}"
   | "ext" => s!"Fix {firstWord args}, and prove both sides agree"
   | "case" | "next" => if closed then "That case is done" else s!"Let's prove that {targetAfter}"

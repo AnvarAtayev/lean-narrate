@@ -15,12 +15,23 @@ namespace Narrate
 def boundHeads : List Name :=
   [``LT.lt, ``LE.le, ``GT.gt, ``GE.ge, ``Ne, ``Membership.mem, ``Dvd.dvd]
 
-/-- Is `cond` a bound on `x`, like `ε > 0` or `n ≥ N`? Checking the relation
-matters: otherwise `P ∧ Q → R` would read as "for every P ∧ Q". -/
-def isBoundOn (cond x : Expr) : Bool :=
+/-- The operand written first in `cond`, for the relations in `boundHeads`: `ε` in
+`ε > 0`, `n` in `n ∈ A`. Membership takes the collection before the element; the
+others take their operands in the order they are written. -/
+def leftOperand (cond : Expr) : Option Expr :=
   match cond.getAppFn with
-  | .const n _ => boundHeads.contains n && cond.getAppArgs.any (· == x)
-  | _ => false
+  | .const n _ =>
+    let args := cond.getAppArgs
+    if !boundHeads.contains n || args.size < 2 then none
+    else if n == ``Membership.mem then args[args.size - 1]?
+    else args[args.size - 2]?
+  | _ => none
+
+/-- Is `cond` a bound on `x`, like `ε > 0` or `n ≥ N`? Checking the relation matters:
+otherwise `P ∧ Q → R` would read as "for every P ∧ Q". So does checking the side `x`
+is on: `0 < n` is a hypothesis about `n`, which reads "if 0 < n then …", whereas the
+bound `n > 0` reads "for every n > 0". -/
+def isBoundOn (cond x : Expr) : Bool := leftOperand cond == some x
 
 /-- Does this statement have a shape the translator can take apart? -/
 def isStructural (e : Expr) : Bool :=
@@ -66,20 +77,50 @@ def groupPhrase (xs : Array Expr) : MetaM String := do
   if let some t := curTy then out := out.push (← binderPhrase names t)
   return String.intercalate " " out.toList
 
+/-! ## Binding strength
+
+A part of a statement is parenthesized when it binds more loosely than the place it
+sits in, so that `(P ∨ Q) ∧ R` reads "(P or Q) and R" rather than "P or Q and R",
+which English would read the other way round. Tightest first: an atom, a negation, a
+conjunction or disjunction, an implication, a quantifier (which runs to the end). -/
+
+def atomPrec : Nat := 5
+def notPrec : Nat := 4
+def andOrPrec : Nat := 3
+def impPrec : Nat := 1
+def quantPrec : Nat := 0
+
+/-- `A ∧ B ∧ C` ↦ `#[A, B, C]`, so a chain reads as one list rather than nesting. -/
+partial def flatten (parts : Expr → Option (Expr × Expr)) (e : Expr) : Array Expr :=
+  match parts e with
+  | some (p, q) => flatten parts p ++ flatten parts q
+  | none => #[e]
+
 /-- Render a proposition as prose.
 
 `nested` is `true` inside a larger statement, where an implication reads better as
-"P implies Q" than "if P then Q".
+"P implies Q" than "if P then Q". `prec` is how tightly the place it sits in binds;
+a statement that binds more loosely than that is parenthesized.
 
 Definitions are unfolded exactly one step, and only when that reveals structure:
 enough to expand a user's `ConvergesTo` or Mathlib's `Even` and `Injective`, while
 `Nat.Prime p` stays named instead of exploding into its internals. -/
-partial def english (e : Expr) (nested : Bool := false) : MetaM String := do
+partial def english (e : Expr) (nested : Bool := false) (prec : Nat := quantPrec) :
+    MetaM String := do
   let e ← deepBeta (← instantiateMVars e)
-  if let some (p, q) := e.and? then return s!"{← english p true} and {← english q true}"
-  if let some (p, q) := e.app2? ``Or then return s!"{← english p true} or {← english q true}"
-  if let some (p, q) := e.iff? then return s!"{← english p true} exactly when {← english q true}"
-  if let some p := e.not? then return s!"it is not the case that {← english p true}"
+  let wrap (p : Nat) (s : String) : String := if p < prec then s!"({s})" else s
+  if e.and?.isSome then
+    let parts ← (flatten Expr.and? e).mapM (english · true atomPrec)
+    return wrap andOrPrec (String.intercalate " and " parts.toList)
+  if (e.app2? ``Or).isSome then
+    let parts ← (flatten (·.app2? ``Or) e).mapM (english · true atomPrec)
+    return wrap andOrPrec (String.intercalate " or " parts.toList)
+  if let some (p, q) := e.iff? then
+    -- Binds tighter than an implication, so `(P → Q) ↔ R` keeps its parentheses.
+    return wrap impPrec s!"{← english p true (impPrec + 1)} exactly when \
+      {← english q true (impPrec + 1)}"
+  if let some p := e.not? then
+    return wrap notPrec s!"it is not the case that {← english p true atomPrec}"
   if let some (t, lam) := e.app2? ``Exists then
     match lam with
     | .lam n _ body _ =>
@@ -88,16 +129,23 @@ partial def english (e : Expr) (nested : Bool := false) : MetaM String := do
         -- `∃ δ, δ > 0 ∧ P` reads "there is some δ > 0 such that P"
         if let some (cond, rest) := body.and? then
           if isBoundOn cond x then
-            return s!"there is some {← ppExpr cond} such that {← english rest true}"
-        return s!"there is some {n} such that {← english body true}"
+            return wrap quantPrec s!"there is some {← ppExpr cond} such that \
+              {← english rest true}"
+        return wrap quantPrec s!"there is some {n} such that {← english body true}"
     | _ => return toString (← ppExpr e)
   match e with
   | .forallE _ t b _ =>
     if (← isProp t) && !b.hasLooseBVars then
       let (hyps, concl) ← collectImps e
-      let hypStr := String.intercalate " and " (← hyps.mapM fun h => english h true).toList
-      let cTxt ← english concl
-      return if nested then s!"{hypStr} implies {cTxt}" else s!"if {hypStr} then {cTxt}"
+      -- Several hypotheses are joined by "and", which would otherwise swallow the
+      -- structure of each. A lone one is closed off by "then", so it only needs
+      -- parentheses when it carries a "then" of its own, as `Injective f` does:
+      -- "if (for all a b, if f a = f b then a = b) then …".
+      let hypPrec := if nested || hyps.size > 1 then atomPrec else impPrec + 1
+      let hypStr := String.intercalate " and " (← hyps.mapM (english · true hypPrec)).toList
+      if nested then
+        return wrap impPrec s!"{hypStr} implies {← english concl true atomPrec}"
+      return wrap quantPrec s!"if {hypStr} then {← english concl}"
     forallTelescope e fun xs body => do
       let mut i := 0
       for x in xs do
@@ -111,12 +159,12 @@ partial def english (e : Expr) (nested : Bool := false) : MetaM String := do
         if (← isProp cond) && !rest'.hasLooseBVars && isBoundOn cond dataVars.back! then
           let pre ← groupPhrase dataVars.pop
           let lead := if pre.isEmpty then "" else pre ++ " "
-          return s!"{lead}for every {← ppExpr cond}, {← english rest'}"
-      return s!"{← groupPhrase dataVars} {← english rest}"
+          return wrap quantPrec s!"{lead}for every {← ppExpr cond}, {← english rest'}"
+      return wrap quantPrec s!"{← groupPhrase dataVars} {← english rest}"
   | _ =>
     if e.getAppFn.isConst then
       if let some e' ← unfoldDefinition? e then
-        if isStructural e' then return ← english e' nested
+        if isStructural e' then return ← english e' nested prec
     return toString (← ppExpr e)
 
 /-- The full claim behind a goal, re-quantified over its local context, so an
